@@ -1,0 +1,33 @@
+[project]
+name = "zoomcutter"
+version = "0.1.0"
+description = "Automatically process Zoom recordings to switch between speaker-only and side-by-side views based on screen sharing chapters"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Welton Rodrigo", email = "rodrigo@familianascimento.org" }
+]
+license = { text = "MIT" }
+keywords = ["zoom", "video", "processing", "ffmpeg", "screen-sharing", "presentation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Multimedia :: Video :: Conversion",
+]
+dependencies = [
+    "click>=8.3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/weltonrodrigo/zoomcutter"
+Repository = "https://github.com/weltonrodrigo/zoomcutter"
+Issues = "https://github.com/weltonrodrigo/zoomcutter/issues"
+
+[project.scripts]
+zoomcutter = "main:main"

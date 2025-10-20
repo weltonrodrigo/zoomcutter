@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""
+Zoom Video Processor - Automatically switches between speaker and side-by-side views
+based on screen sharing chapters in Zoom recordings.
+"""
+import json
+import subprocess
+import sys
+from pathlib import Path
+import click
+
+
+def get_video_info(video_file):
+    """Extract video information (resolution, chapters) using ffprobe."""
+    cmd = [
+        'ffprobe',
+        '-v', 'quiet',
+        '-print_format', 'json',
+        '-show_streams',
+        '-show_chapters',
+        str(video_file)
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+
+        # Extract video stream info
+        video_stream = None
+        for stream in data.get('streams', []):
+            if stream.get('codec_type') == 'video':
+                video_stream = stream
+                break
+
+        return {
+            'chapters': data.get('chapters', []),
+            'width': video_stream.get('width') if video_stream else None,
+            'height': video_stream.get('height') if video_stream else None,
+        }
+    except subprocess.CalledProcessError as e:
+        click.echo(f"Error running ffprobe: {e}", err=True)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        click.echo(f"Error parsing ffprobe output: {e}", err=True)
+        sys.exit(1)
+
+
+def get_sharing_intervals(chapters):
+    """Extract sharing start/stop intervals from chapters."""
+    intervals = []
+    sharing_start = None
+
+    for chapter in chapters:
+        title = chapter.get('tags', {}).get('title', '')
+        start_time = float(chapter['start_time'])
+
+        if 'Sharing Started' in title:
+            sharing_start = start_time
+        elif 'Sharing Stopped' in title and sharing_start is not None:
+            intervals.append((sharing_start, start_time))
+            sharing_start = None
+
+    # If sharing never stopped, extend to end
+    if sharing_start is not None:
+        # We'll handle this by using the video duration
+        intervals.append((sharing_start, None))
+
+    return intervals
+
+
+def time_to_seconds(time_str):
+    """Convert HH:MM:SS to seconds."""
+    if not time_str:
+        return None
+    parts = time_str.split(':')
+    if len(parts) == 3:
+        h, m, s = parts
+        return int(h) * 3600 + int(m) * 60 + float(s)
+    elif len(parts) == 2:
+        m, s = parts
+        return int(m) * 60 + float(s)
+    else:
+        return float(parts[0])
+
+
+def build_filter_complex(sharing_intervals, cam_width, cam_height, start_trim=None, end_trim=None):
+    """Build the ffmpeg filter_complex for dynamic layout switching.
+
+    Uses camera's native resolution to minimize scaling:
+    - Speaker-only: Camera at native resolution (no scaling!)
+    - Side-by-side: Camera at half width + slides at half width
+    """
+
+    # If we have trim times, adjust sharing intervals
+    if start_trim or end_trim:
+        adjusted_intervals = []
+        for start, end in sharing_intervals:
+            # Adjust relative to trim start
+            if start_trim:
+                start = max(0, start - start_trim)
+                if end:
+                    end = end - start_trim
+
+            # Skip intervals outside trim range
+            if end_trim and start >= (end_trim - (start_trim or 0)):
+                continue
+            if end and end <= 0:
+                continue
+
+            # Adjust end if it exceeds trim end
+            if end_trim and (end is None or end > (end_trim - (start_trim or 0))):
+                end = end_trim - (start_trim or 0)
+
+            adjusted_intervals.append((start, end))
+        sharing_intervals = adjusted_intervals
+
+    # Build the enable expressions for each mode
+    # Mode 1: Speaker only (when NOT sharing)
+    # Mode 2: Side-by-side (when sharing)
+
+    speaker_enable = []
+    sidebyside_enable = []
+
+    # Start with speaker mode from beginning
+    if not sharing_intervals or sharing_intervals[0][0] > 0:
+        speaker_enable.append(f"lt(t,{sharing_intervals[0][0] if sharing_intervals else 'inf'})")
+
+    for i, (share_start, share_end) in enumerate(sharing_intervals):
+        # During sharing: side-by-side
+        if share_end is None:
+            sidebyside_enable.append(f"gte(t,{share_start})")
+        else:
+            sidebyside_enable.append(f"between(t,{share_start},{share_end})")
+
+            # After sharing stops: speaker only (until next sharing or end)
+            if i + 1 < len(sharing_intervals):
+                next_start = sharing_intervals[i + 1][0]
+                speaker_enable.append(f"between(t,{share_end},{next_start})")
+            else:
+                speaker_enable.append(f"gte(t,{share_end})")
+
+    # Build enable filter expressions
+    speaker_expr = '+'.join(speaker_enable) if speaker_enable else '0'
+    sidebyside_expr = '+'.join(sidebyside_enable) if sidebyside_enable else '0'
+
+    # Calculate dimensions based on camera resolution
+    # Speaker-only: Use camera native resolution (no scaling!)
+    # Side-by-side: Camera width = half of final, slides = other half
+    half_width = cam_width // 2
+    final_width = cam_width  # Output resolution matches camera
+    final_height = cam_height
+
+    # Build the complete filter
+    filter_parts = []
+
+    # Process camera feed (input 0)
+    filter_parts.append(
+        "[0:v]split=2[cam_full][cam_half]"
+    )
+
+    # Full screen camera (speaker only mode) - NO SCALING, just copy!
+    filter_parts.append(
+        "[cam_full]copy[cam_speaker]"
+    )
+
+    # Half screen camera (side-by-side mode)
+    filter_parts.append(
+        f"[cam_half]scale={half_width}:-1:force_original_aspect_ratio=decrease,"
+        f"pad={half_width}:{final_height}:(ow-iw)/2:(oh-ih)/2:black[cam_side]"
+    )
+
+    # Process slides (input 1) - scale to half width
+    filter_parts.append(
+        f"[1:v]scale={half_width}:-1:force_original_aspect_ratio=decrease,"
+        f"pad={half_width}:{final_height}:(ow-iw)/2:(oh-ih)/2:black[slides]"
+    )
+
+    # Create side-by-side layout
+    filter_parts.append(
+        "[slides][cam_side]hstack=inputs=2[sidebyside]"
+    )
+
+    # Select between speaker-only and side-by-side based on time
+    filter_parts.append(
+        f"[cam_speaker][sidebyside]"
+        f"overlay=enable='{sidebyside_expr}':x=0:y=0[v]"
+    )
+
+    return ';'.join(filter_parts)
+
+
+@click.command()
+@click.argument('camera_file', type=click.Path(exists=True))
+@click.argument('slides_file', type=click.Path(exists=True))
+@click.argument('output_file', type=click.Path())
+@click.option('--start', '-ss', help='Start time (HH:MM:SS)')
+@click.option('--end', '-to', help='End time (HH:MM:SS)')
+@click.option('--dry-run', is_flag=True, help='Print ffmpeg command without executing')
+def main(camera_file, slides_file, output_file, start, end, dry_run):
+    """
+    Process Zoom recordings to automatically switch between speaker and side-by-side views.
+
+    CAMERA_FILE: Video file with camera feed (e.g., *_avo_*.mp4)
+    SLIDES_FILE: Video file with screen sharing (e.g., *_as_*.mp4)
+    OUTPUT_FILE: Output video file
+    """
+    click.echo(f"Processing Zoom recordings...")
+    click.echo(f"  Camera: {camera_file}")
+    click.echo(f"  Slides: {slides_file}")
+    click.echo(f"  Output: {output_file}")
+
+    # Get camera resolution
+    cam_info = get_video_info(camera_file)
+    cam_width = cam_info['width']
+    cam_height = cam_info['height']
+
+    if not cam_width or not cam_height:
+        click.echo("Error: Could not detect camera resolution", err=True)
+        sys.exit(1)
+
+    click.echo(f"\nCamera resolution: {cam_width}x{cam_height}")
+
+    # Parse chapters from slides file
+    slides_info = get_video_info(slides_file)
+    chapters = slides_info['chapters']
+    click.echo(f"\nFound {len(chapters)} chapters")
+
+    # Extract sharing intervals
+    sharing_intervals = get_sharing_intervals(chapters)
+    click.echo(f"Found {len(sharing_intervals)} screen sharing intervals:")
+    for i, (start_t, end_t) in enumerate(sharing_intervals, 1):
+        end_str = f"{end_t:.2f}s" if end_t else "end"
+        click.echo(f"  {i}. {start_t:.2f}s - {end_str}")
+
+    # Convert trim times
+    start_seconds = time_to_seconds(start) if start else None
+    end_seconds = time_to_seconds(end) if end else None
+
+    if start_seconds:
+        click.echo(f"\nTrimming from: {start} ({start_seconds}s)")
+    if end_seconds:
+        click.echo(f"Trimming to: {end} ({end_seconds}s)")
+
+    # Always use camera native resolution for maximum speed
+    # No upscaling = better performance, and streaming services will re-encode anyway
+    click.echo(f"\nOutput resolution: {cam_width}x{cam_height} (camera native)")
+    click.echo(f"  - Speaker-only mode: No scaling (maximum performance!)")
+    click.echo(f"  - Side-by-side mode: Only scales slides down")
+
+    # Build filter (don't pass trim times to filter since we're using -ss/-to)
+    # The sharing intervals remain in absolute time, but ffmpeg will handle the offset
+    filter_complex = build_filter_complex(sharing_intervals, cam_width, cam_height, start_seconds, end_seconds)
+
+    # Build ffmpeg command with -ss BEFORE inputs for fast seeking
+    cmd = ['ffmpeg']
+
+    # Add -ss before each input for fast seeking (seeks before decoding)
+    if start:
+        cmd.extend(['-ss', start])
+    cmd.extend(['-i', camera_file])
+
+    if start:
+        cmd.extend(['-ss', start])
+    cmd.extend(['-i', slides_file])
+
+    # Add -to for output duration (if provided)
+    if end:
+        # Calculate duration from start
+        if start_seconds:
+            duration = end_seconds - start_seconds
+            cmd.extend(['-t', str(duration)])
+        else:
+            cmd.extend(['-to', end])
+
+    cmd.extend([
+        '-filter_complex', filter_complex,
+        '-map', '[v]',
+        '-map', '0:a',
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '18',
+        '-c:a', 'copy',
+        '-movflags', '+faststart',
+        output_file
+    ])
+
+    if dry_run:
+        click.echo("\n" + "=" * 80)
+        click.echo("FFMPEG COMMAND:")
+        click.echo("=" * 80)
+        click.echo(' '.join(cmd))
+        return
+
+    click.echo("\nRunning ffmpeg...")
+    try:
+        subprocess.run(cmd, check=True)
+        click.echo(f"\n✓ Successfully created: {output_file}")
+    except subprocess.CalledProcessError as e:
+        click.echo(f"\n✗ Error running ffmpeg: {e}", err=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
