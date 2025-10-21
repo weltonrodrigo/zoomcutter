@@ -30,6 +30,12 @@ Perfect for creating professional-looking recordings of presentations, lectures,
 pip install zoomcutter
 ```
 
+## Run without installing
+
+```bash
+uvx zoomcutter --help
+```
+
 ### Requirements
 
 ZoomCutter requires **ffmpeg** to be installed on your system:
