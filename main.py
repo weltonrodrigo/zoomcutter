@@ -83,12 +83,55 @@ def time_to_seconds(time_str):
         return float(parts[0])
 
 
-def build_filter_complex(sharing_intervals, cam_width, cam_height, start_trim=None, end_trim=None):
+def parse_dimensions(dim_str):
+    """Parse dimension string like '1920x1080' or '1080p' into (width, height).
+
+    Supported formats:
+    - WIDTHxHEIGHT: e.g., '1920x1080', '1280x720'
+    - HEIGHTp: e.g., '1080p' (assumes 16:9 ratio), '720p', '480p'
+
+    Returns:
+        tuple: (width, height) or None if invalid
+    """
+    if not dim_str:
+        return None
+
+    dim_str = dim_str.strip().lower()
+
+    # Handle WIDTHxHEIGHT format
+    if 'x' in dim_str:
+        try:
+            parts = dim_str.split('x')
+            if len(parts) == 2:
+                width = int(parts[0])
+                height = int(parts[1])
+                if width > 0 and height > 0:
+                    return (width, height)
+        except ValueError:
+            return None
+
+    # Handle HEIGHTp format (assumes 16:9 ratio)
+    elif dim_str.endswith('p'):
+        try:
+            height = int(dim_str[:-1])
+            # Common resolutions with 16:9 ratio
+            width = int(height * 16 / 9)
+            if width > 0 and height > 0:
+                return (width, height)
+        except ValueError:
+            return None
+
+    return None
+
+
+def build_filter_complex(sharing_intervals, cam_width, cam_height, start_trim=None, end_trim=None, output_width=None, output_height=None):
     """Build the ffmpeg filter_complex for dynamic layout switching.
 
-    Uses camera's native resolution to minimize scaling:
+    By default, uses camera's native resolution to minimize scaling:
     - Speaker-only: Camera at native resolution (no scaling!)
     - Side-by-side: Camera at half width + slides at half width
+
+    If output_width/output_height are specified, scales to those dimensions instead.
     """
 
     # If we have trim times, adjust sharing intervals
@@ -143,12 +186,14 @@ def build_filter_complex(sharing_intervals, cam_width, cam_height, start_trim=No
     speaker_expr = '+'.join(speaker_enable) if speaker_enable else '0'
     sidebyside_expr = '+'.join(sidebyside_enable) if sidebyside_enable else '0'
 
-    # Calculate dimensions based on camera resolution
-    # Speaker-only: Use camera native resolution (no scaling!)
-    # Side-by-side: Camera width = half of final, slides = other half
-    half_width = cam_width // 2
-    final_width = cam_width  # Output resolution matches camera
-    final_height = cam_height
+    # Calculate dimensions
+    # Use custom output dimensions if provided, otherwise use camera native resolution
+    final_width = output_width if output_width else cam_width
+    final_height = output_height if output_height else cam_height
+    half_width = final_width // 2
+
+    # Determine if we need to scale camera feed
+    needs_camera_scaling = (output_width is not None and output_height is not None)
 
     # Build the complete filter
     filter_parts = []
@@ -158,10 +203,18 @@ def build_filter_complex(sharing_intervals, cam_width, cam_height, start_trim=No
         "[0:v]split=2[cam_full][cam_half]"
     )
 
-    # Full screen camera (speaker only mode) - NO SCALING, just copy!
-    filter_parts.append(
-        "[cam_full]copy[cam_speaker]"
-    )
+    # Full screen camera (speaker only mode)
+    if needs_camera_scaling:
+        # Scale camera to match output dimensions
+        filter_parts.append(
+            f"[cam_full]scale={final_width}:-1:force_original_aspect_ratio=decrease,"
+            f"pad={final_width}:{final_height}:(ow-iw)/2:(oh-ih)/2:black[cam_speaker]"
+        )
+    else:
+        # No scaling needed - just copy
+        filter_parts.append(
+            "[cam_full]copy[cam_speaker]"
+        )
 
     # Half screen camera (side-by-side mode)
     filter_parts.append(
@@ -195,8 +248,9 @@ def build_filter_complex(sharing_intervals, cam_width, cam_height, start_trim=No
 @click.argument('output_file', type=click.Path())
 @click.option('--start', '-ss', help='Start time (HH:MM:SS)')
 @click.option('--end', '-to', help='End time (HH:MM:SS)')
+@click.option('--dimensions', '-d', help='Output dimensions (e.g., "1920x1080" or "1080p"). Default: camera native resolution')
 @click.option('--dry-run', is_flag=True, help='Print ffmpeg command without executing')
-def main(camera_file, slides_file, output_file, start, end, dry_run):
+def main(camera_file, slides_file, output_file, start, end, dimensions, dry_run):
     """
     Process Zoom recordings to automatically switch between speaker and side-by-side views.
 
@@ -241,15 +295,33 @@ def main(camera_file, slides_file, output_file, start, end, dry_run):
     if end_seconds:
         click.echo(f"Trimming to: {end} ({end_seconds}s)")
 
-    # Always use camera native resolution for maximum speed
-    # No upscaling = better performance, and streaming services will re-encode anyway
-    click.echo(f"\nOutput resolution: {cam_width}x{cam_height} (camera native)")
-    click.echo(f"  - Speaker-only mode: No scaling (maximum performance!)")
-    click.echo(f"  - Side-by-side mode: Only scales slides down")
+    # Parse custom dimensions if provided
+    output_width = None
+    output_height = None
+    if dimensions:
+        parsed_dims = parse_dimensions(dimensions)
+        if parsed_dims:
+            output_width, output_height = parsed_dims
+            click.echo(f"\nOutput resolution: {output_width}x{output_height} (custom)")
+            if output_width != cam_width or output_height != cam_height:
+                click.echo(f"  - Camera will be scaled from {cam_width}x{cam_height}")
+        else:
+            click.echo(f"\nError: Invalid dimension format '{dimensions}'", err=True)
+            click.echo("  Use formats like '1920x1080' or '1080p'", err=True)
+            sys.exit(1)
+    else:
+        # Use camera native resolution for maximum speed
+        # No upscaling = better performance, and streaming services will re-encode anyway
+        click.echo(f"\nOutput resolution: {cam_width}x{cam_height} (camera native)")
+        click.echo(f"  - Speaker-only mode: No scaling (maximum performance!)")
+        click.echo(f"  - Side-by-side mode: Only scales slides down")
 
     # Build filter (don't pass trim times to filter since we're using -ss/-to)
     # The sharing intervals remain in absolute time, but ffmpeg will handle the offset
-    filter_complex = build_filter_complex(sharing_intervals, cam_width, cam_height, start_seconds, end_seconds)
+    filter_complex = build_filter_complex(
+        sharing_intervals, cam_width, cam_height, start_seconds, end_seconds,
+        output_width, output_height
+    )
 
     # Build ffmpeg command with -ss BEFORE inputs for fast seeking
     cmd = ['ffmpeg']

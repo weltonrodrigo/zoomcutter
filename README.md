@@ -15,7 +15,8 @@ Perfect for creating professional-looking recordings of presentations, lectures,
 ## Features
 
 - **Automatic switching**: Reads Zoom chapter markers to detect when screen sharing starts/stops
-- **Smart resolution handling**: Uses camera's native resolution (no unnecessary upscaling)
+- **Smart resolution handling**: Uses camera's native resolution by default (no unnecessary upscaling)
+- **Custom dimensions**: Optional override to set specific output resolution (e.g., 1080p, 720p)
 - **Trim support**: Cut your video to specific start/end times
 - **Fast processing**: Optimized ffmpeg settings for quick encoding
 - **Dry-run mode**: Preview the ffmpeg command before processing
@@ -70,6 +71,23 @@ zoomcutter camera.mp4 slides.mp4 output.mp4 --start 00:02:00 --end 00:45:00
 # Using short options
 zoomcutter camera.mp4 slides.mp4 output.mp4 -ss 00:02:00 -to 00:45:00
 ```
+
+### Custom Output Dimensions
+
+Set custom output dimensions instead of using the camera's native resolution:
+
+```bash
+# Output at 1080p (1920x1080) even if camera is 720p
+zoomcutter camera.mp4 slides.mp4 output.mp4 --dimensions 1080p
+
+# Or specify exact dimensions
+zoomcutter camera.mp4 slides.mp4 output.mp4 -d 1920x1080
+
+# Common presets: 1080p, 720p, 480p
+# Or any custom WIDTHxHEIGHT format
+```
+
+**Note**: This will scale the video to the specified dimensions. Upscaling (e.g., 720p to 1080p) may reduce quality, while downscaling can reduce file size.
 
 ### Dry Run
 
