@@ -6,7 +6,8 @@ Automatically process Zoom recordings to switch between speaker-only and side-by
 
 ZoomCutter intelligently combines your Zoom camera and screen sharing recordings into a single video that:
 - Shows **speaker-only view** when you're not sharing your screen
-- Switches to **side-by-side view** (slides + camera) when screen sharing is detected
+- Switches to your chosen layout (side-by-side or diagonal) when screen sharing is detected
+- Supports multiple layout options and custom backgrounds
 - Maintains camera's native resolution for optimal performance
 - Uses Zoom's built-in chapter markers to detect sharing automatically
 
@@ -17,6 +18,8 @@ Perfect for creating professional-looking recordings of presentations, lectures,
 - **Automatic switching**: Reads Zoom chapter markers to detect when screen sharing starts/stops
 - **Smart resolution handling**: Uses camera's native resolution by default (no unnecessary upscaling)
 - **Custom dimensions**: Optional override to set specific output resolution (e.g., 1080p, 720p)
+- **Multiple layouts**: Choose between side-by-side (50/50 split) or diagonal (large slides with small camera overlay)
+- **Custom backgrounds**: Set background color or use custom background images
 - **Trim support**: Cut your video to specific start/end times
 - **Fast processing**: Optimized ffmpeg settings for quick encoding
 - **Dry-run mode**: Preview the ffmpeg command before processing
@@ -97,13 +100,76 @@ Preview the ffmpeg command without processing:
 zoomcutter camera.mp4 slides.mp4 output.mp4 --dry-run
 ```
 
+### Layout Options
+
+Choose between different layout modes for when screen sharing is active:
+
+#### Side-by-Side Layout (default)
+```bash
+zoomcutter camera.mp4 slides.mp4 output.mp4 --layout side-by-side
+# Or short form:
+zoomcutter camera.mp4 slides.mp4 output.mp4 -l side-by-side
+```
+- 50/50 split: slides on left, camera on right
+- Equal space for both elements
+- Classic presentation layout
+
+#### Diagonal Layout
+```bash
+zoomcutter camera.mp4 slides.mp4 output.mp4 --layout diagonal
+# Or short form:
+zoomcutter camera.mp4 slides.mp4 output.mp4 -l diagonal
+```
+- Large slides (~72% width) on the left
+- Small camera overlay in bottom-right corner
+- Minimal content overlap
+- Great for slide-heavy presentations
+
+### Background Customization
+
+Customize the background color or use a custom image:
+
+#### Custom Background Color
+```bash
+# Use a named color
+zoomcutter camera.mp4 slides.mp4 output.mp4 --background-color white
+
+# Use a hex color
+zoomcutter camera.mp4 slides.mp4 output.mp4 --background-color "#1E3A8A"
+
+# Short form:
+zoomcutter camera.mp4 slides.mp4 output.mp4 -bg "#FF5733"
+```
+
+#### Background Image
+```bash
+# Use a custom background image
+zoomcutter camera.mp4 slides.mp4 output.mp4 --background-image /path/to/background.jpg
+
+# Short form:
+zoomcutter camera.mp4 slides.mp4 output.mp4 -bgi background.png
+```
+
+#### Combine Options
+```bash
+# Diagonal layout with custom background
+zoomcutter camera.mp4 slides.mp4 output.mp4 \
+  --layout diagonal \
+  --background-color "#2C3E50" \
+  --start 00:05:00 \
+  --end 01:30:00
+```
+
 ## How It Works
 
 1. **Reads chapter markers**: ZoomCutter analyzes the screen sharing video file to find "Sharing Started" and "Sharing Stopped" chapter markers that Zoom automatically adds
 2. **Detects camera resolution**: Uses the camera feed's native resolution for optimal quality
 3. **Builds filter**: Creates an ffmpeg filter that:
-   - Shows camera at full resolution when not sharing
-   - Switches to side-by-side (slides on left, camera on right) during sharing
+   - Shows camera at full resolution when not sharing (speaker-only mode)
+   - Switches to your chosen layout during sharing:
+     - **Side-by-side**: 50/50 split with slides on left, camera on right
+     - **Diagonal**: Large slides with small camera overlay in bottom-right
+   - Applies custom background colors or images if specified
 4. **Processes video**: Runs ffmpeg with optimized settings for fast, high-quality output
 
 ## Output Quality

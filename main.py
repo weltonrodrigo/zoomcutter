@@ -124,14 +124,29 @@ def parse_dimensions(dim_str):
     return None
 
 
-def build_filter_complex(sharing_intervals, cam_width, cam_height, start_trim=None, end_trim=None, output_width=None, output_height=None):
+def build_filter_complex(sharing_intervals, cam_width, cam_height, start_trim=None, end_trim=None,
+                         output_width=None, output_height=None, layout='side-by-side',
+                         background_color='black', background_image=None):
     """Build the ffmpeg filter_complex for dynamic layout switching.
 
     By default, uses camera's native resolution to minimize scaling:
     - Speaker-only: Camera at native resolution (no scaling!)
     - Side-by-side: Camera at half width + slides at half width
+    - Diagonal: Slides large on left, camera small in bottom-right corner
 
     If output_width/output_height are specified, scales to those dimensions instead.
+
+    Args:
+        sharing_intervals: List of (start, end) tuples for screen sharing
+        cam_width: Camera video width
+        cam_height: Camera video height
+        start_trim: Start trim time in seconds
+        end_trim: End trim time in seconds
+        output_width: Custom output width (optional)
+        output_height: Custom output height (optional)
+        layout: Layout type ('side-by-side' or 'diagonal')
+        background_color: Background color (e.g., 'black', '#FF0000')
+        background_image: Path to background image (optional)
     """
 
     # If we have trim times, adjust sharing intervals
@@ -190,13 +205,30 @@ def build_filter_complex(sharing_intervals, cam_width, cam_height, start_trim=No
     # Use custom output dimensions if provided, otherwise use camera native resolution
     final_width = output_width if output_width else cam_width
     final_height = output_height if output_height else cam_height
-    half_width = final_width // 2
 
     # Determine if we need to scale camera feed
     needs_camera_scaling = (output_width is not None and output_height is not None)
 
     # Build the complete filter
     filter_parts = []
+
+    # Create background canvas if using background image or custom color
+    if background_image:
+        # Load background image and scale to output size
+        filter_parts.append(
+            f"movie={background_image}:loop=0,setpts=N/(FRAME_RATE*TB),"
+            f"scale={final_width}:{final_height}:force_original_aspect_ratio=decrease,"
+            f"pad={final_width}:{final_height}:(ow-iw)/2:(oh-ih)/2:{background_color}[bg]"
+        )
+        base_canvas = "[bg]"
+    elif background_color != 'black':
+        # Create colored canvas
+        filter_parts.append(
+            f"color=c={background_color}:s={final_width}x{final_height}[bg]"
+        )
+        base_canvas = "[bg]"
+    else:
+        base_canvas = None
 
     # Process camera feed (input 0)
     filter_parts.append(
@@ -206,36 +238,82 @@ def build_filter_complex(sharing_intervals, cam_width, cam_height, start_trim=No
     # Full screen camera (speaker only mode)
     if needs_camera_scaling:
         # Scale camera to match output dimensions
-        filter_parts.append(
-            f"[cam_full]scale={final_width}:-1:force_original_aspect_ratio=decrease,"
-            f"pad={final_width}:{final_height}:(ow-iw)/2:(oh-ih)/2:black[cam_speaker]"
-        )
+        if base_canvas:
+            filter_parts.append(
+                f"[cam_full]scale={final_width}:-1:force_original_aspect_ratio=decrease,"
+                f"pad={final_width}:{final_height}:(ow-iw)/2:(oh-ih)/2:{background_color}[cam_speaker_sized];"
+                f"{base_canvas}[cam_speaker_sized]overlay=(W-w)/2:(H-h)/2[cam_speaker]"
+            )
+        else:
+            filter_parts.append(
+                f"[cam_full]scale={final_width}:-1:force_original_aspect_ratio=decrease,"
+                f"pad={final_width}:{final_height}:(ow-iw)/2:(oh-ih)/2:black[cam_speaker]"
+            )
     else:
-        # No scaling needed - just copy
+        # No scaling needed
+        if base_canvas:
+            filter_parts.append(
+                f"[cam_full]scale={final_width}:-1:force_original_aspect_ratio=decrease,"
+                f"pad={final_width}:{final_height}:(ow-iw)/2:(oh-ih)/2:{background_color}[cam_speaker_sized];"
+                f"{base_canvas}[cam_speaker_sized]overlay=(W-w)/2:(H-h)/2[cam_speaker]"
+            )
+        else:
+            filter_parts.append(
+                "[cam_full]copy[cam_speaker]"
+            )
+
+    # Build layout based on selected mode
+    if layout == 'diagonal':
+        # Diagonal layout: Large slides on left, small camera in bottom-right
+        # Slides take ~72% width, camera ~30% width in corner
+        slides_width = int(final_width * 0.72)
+        cam_small_width = int(final_width * 0.30)
+
+        # Calculate positions: camera in bottom-right with small margin
+        margin = 20
+        cam_x = final_width - cam_small_width - margin
+        cam_y = final_height - int(cam_small_width * 0.75) - margin  # Assuming 4:3 aspect ratio for camera
+
+        # Scale camera to small size
         filter_parts.append(
-            "[cam_full]copy[cam_speaker]"
+            f"[cam_half]scale={cam_small_width}:-1:force_original_aspect_ratio=decrease[cam_small]"
         )
 
-    # Half screen camera (side-by-side mode)
-    filter_parts.append(
-        f"[cam_half]scale={half_width}:-1:force_original_aspect_ratio=decrease,"
-        f"pad={half_width}:{final_height}:(ow-iw)/2:(oh-ih)/2:black[cam_side]"
-    )
+        # Scale slides to large size on left
+        filter_parts.append(
+            f"[1:v]scale={slides_width}:-1:force_original_aspect_ratio=decrease,"
+            f"pad={final_width}:{final_height}:0:(oh-ih)/2:{background_color}[slides_pad]"
+        )
 
-    # Process slides (input 1) - scale to half width
-    filter_parts.append(
-        f"[1:v]scale={half_width}:-1:force_original_aspect_ratio=decrease,"
-        f"pad={half_width}:{final_height}:(ow-iw)/2:(oh-ih)/2:black[slides]"
-    )
+        # Overlay camera on bottom-right of slides
+        filter_parts.append(
+            f"[slides_pad][cam_small]overlay={cam_x}:{cam_y}[combined]"
+        )
 
-    # Create side-by-side layout
-    filter_parts.append(
-        "[slides][cam_side]hstack=inputs=2[sidebyside]"
-    )
+    else:  # side-by-side (default)
+        # Side-by-side: Camera at half width + slides at half width
+        half_width = final_width // 2
 
-    # Select between speaker-only and side-by-side based on time
+        # Half screen camera
+        filter_parts.append(
+            f"[cam_half]scale={half_width}:-1:force_original_aspect_ratio=decrease,"
+            f"pad={half_width}:{final_height}:(ow-iw)/2:(oh-ih)/2:{background_color}[cam_side]"
+        )
+
+        # Process slides - scale to half width
+        filter_parts.append(
+            f"[1:v]scale={half_width}:-1:force_original_aspect_ratio=decrease,"
+            f"pad={half_width}:{final_height}:(ow-iw)/2:(oh-ih)/2:{background_color}[slides]"
+        )
+
+        # Create side-by-side layout
+        filter_parts.append(
+            "[slides][cam_side]hstack=inputs=2[combined]"
+        )
+
+    # Select between speaker-only and combined layout based on time
     filter_parts.append(
-        f"[cam_speaker][sidebyside]"
+        f"[cam_speaker][combined]"
         f"overlay=enable='{sidebyside_expr}':x=0:y=0[v]"
     )
 
@@ -249,8 +327,18 @@ def build_filter_complex(sharing_intervals, cam_width, cam_height, start_trim=No
 @click.option('--start', '-ss', help='Start time (HH:MM:SS)')
 @click.option('--end', '-to', help='End time (HH:MM:SS)')
 @click.option('--dimensions', '-d', help='Output dimensions (e.g., "1920x1080" or "1080p"). Default: camera native resolution')
+@click.option('--layout', '-l',
+              type=click.Choice(['side-by-side', 'diagonal'], case_sensitive=False),
+              default='side-by-side',
+              help='Layout mode: side-by-side (50/50 split) or diagonal (large slides with small camera overlay)')
+@click.option('--background-color', '-bg',
+              default='black',
+              help='Background color (e.g., "black", "white", "#FF0000")')
+@click.option('--background-image', '-bgi',
+              type=click.Path(exists=True),
+              help='Background image file (optional)')
 @click.option('--dry-run', is_flag=True, help='Print ffmpeg command without executing')
-def main(camera_file, slides_file, output_file, start, end, dimensions, dry_run):
+def main(camera_file, slides_file, output_file, start, end, dimensions, layout, background_color, background_image, dry_run):
     """
     Process Zoom recordings to automatically switch between speaker and side-by-side views.
 
@@ -313,14 +401,26 @@ def main(camera_file, slides_file, output_file, start, end, dimensions, dry_run)
         # Use camera native resolution for maximum speed
         # No upscaling = better performance, and streaming services will re-encode anyway
         click.echo(f"\nOutput resolution: {cam_width}x{cam_height} (camera native)")
+
+    click.echo(f"Layout mode: {layout}")
+    if layout == 'diagonal':
+        click.echo(f"  - Speaker-only mode: Full camera view")
+        click.echo(f"  - Sharing mode: Large slides (~72% width) with small camera overlay (bottom-right)")
+    else:
         click.echo(f"  - Speaker-only mode: No scaling (maximum performance!)")
-        click.echo(f"  - Side-by-side mode: Only scales slides down")
+        click.echo(f"  - Side-by-side mode: 50/50 split")
+
+    if background_image:
+        click.echo(f"Background: Image from {background_image}")
+    elif background_color != 'black':
+        click.echo(f"Background color: {background_color}")
 
     # Build filter (don't pass trim times to filter since we're using -ss/-to)
     # The sharing intervals remain in absolute time, but ffmpeg will handle the offset
     filter_complex = build_filter_complex(
         sharing_intervals, cam_width, cam_height, start_seconds, end_seconds,
-        output_width, output_height
+        output_width, output_height, layout=layout, background_color=background_color,
+        background_image=background_image
     )
 
     # Build ffmpeg command with -ss BEFORE inputs for fast seeking
