@@ -1,0 +1,9 @@
+# Exclude all video files (they're too large for the repo)
+*.mp4
+
+# Exclude temporary files
+chapters.txt
+stock-slides-temp.mp4
+stock-cam-with-audio.mp4
+stock-cam.mp4
+stock-slides.mp4

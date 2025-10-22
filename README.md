@@ -13,6 +13,18 @@ ZoomCutter intelligently combines your Zoom camera and screen sharing recordings
 
 Perfect for creating professional-looking recordings of presentations, lectures, or meetings!
 
+## Layout Examples
+
+### Side-by-Side Layout
+50/50 split with slides on the left and camera on the right - perfect for balanced presentations.
+
+![Side-by-Side Layout Example](examples/screenshot-side-by-side.png)
+
+### Diagonal Layout
+Large slides (~72% width) with a small camera overlay in the bottom-right corner - ideal for slide-heavy content.
+
+![Diagonal Layout Example](examples/screenshot-diagonal.png)
+
 ## Features
 
 - **Automatic switching**: Reads Zoom chapter markers to detect when screen sharing starts/stops
