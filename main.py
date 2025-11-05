@@ -242,7 +242,7 @@ def build_filter_complex(sharing_intervals, cam_width, cam_height, start_trim=No
             filter_parts.append(
                 f"[cam_full]scale={final_width}:-1:force_original_aspect_ratio=decrease,"
                 f"pad={final_width}:{final_height}:(ow-iw)/2:(oh-ih)/2:{background_color}[cam_speaker_sized];"
-                f"{base_canvas}[cam_speaker_sized]overlay=(W-w)/2:(H-h)/2[cam_speaker]"
+                f"{base_canvas}[cam_speaker_sized]overlay=x=(W-w)/2:y=(H-h)/2:shortest=1[cam_speaker]"
             )
         else:
             filter_parts.append(
@@ -255,7 +255,7 @@ def build_filter_complex(sharing_intervals, cam_width, cam_height, start_trim=No
             filter_parts.append(
                 f"[cam_full]scale={final_width}:-1:force_original_aspect_ratio=decrease,"
                 f"pad={final_width}:{final_height}:(ow-iw)/2:(oh-ih)/2:{background_color}[cam_speaker_sized];"
-                f"{base_canvas}[cam_speaker_sized]overlay=(W-w)/2:(H-h)/2[cam_speaker]"
+                f"{base_canvas}[cam_speaker_sized]overlay=x=(W-w)/2:y=(H-h)/2:shortest=1[cam_speaker]"
             )
         else:
             filter_parts.append(
@@ -312,9 +312,10 @@ def build_filter_complex(sharing_intervals, cam_width, cam_height, start_trim=No
         )
 
     # Select between speaker-only and combined layout based on time
+    # Use eof_action=pass to continue with cam_speaker if combined runs out of frames
     filter_parts.append(
         f"[cam_speaker][combined]"
-        f"overlay=enable='{sidebyside_expr}':x=0:y=0[v]"
+        f"overlay=enable='{sidebyside_expr}':eof_action=pass:x=0:y=0[v]"
     )
 
     return ';'.join(filter_parts)
@@ -435,7 +436,7 @@ def main(camera_file, slides_file, output_file, start, end, dimensions, layout, 
         cmd.extend(['-ss', start])
     cmd.extend(['-i', slides_file])
 
-    # Add -to for output duration (if provided)
+    # Add -to for output duration (only if user explicitly provided --end)
     if end:
         # Calculate duration from start
         if start_seconds:

@@ -1,6 +1,6 @@
 [project]
 name = "zoomcutter"
-version = "0.2.2"
+version = "0.2.3"
 description = "Automatically process Zoom recordings to switch between speaker-only and side-by-side views based on screen sharing chapters"
 readme = "README.md"
 requires-python = ">=3.11"
